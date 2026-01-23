@@ -8,6 +8,8 @@
     <div class="flex items-center gap-2">
       <LanguageSwitcher />
       <ThemeSwitcher />
+      <LinksGithub />
+      <LinksX />
       <UserDropdown />
     </div>
   </header>
