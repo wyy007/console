@@ -42,11 +42,11 @@ const navGroups = computed(() => {
     if (nav.children?.length) {
       visibleChildren = nav.children.filter(child => {
         if (child.to && !canAccessPath(child.to)) return false
-        
+
         // If child is admin only and user is not admin, but has permission (checked above), allow it.
         // If child has no path (unlikely for leaf) and is admin only, hide it.
         if (child.isAdminOnly && !isAdmin.value && !child.to) return false
-        
+
         return true
       })
 
@@ -59,10 +59,10 @@ const navGroups = computed(() => {
       if (nav.to && !canAccessPath(nav.to)) {
         continue
       }
-      
+
       // If no path and no children (e.g. divider), check isAdminOnly
       if (!nav.to && nav.isAdminOnly && !isAdmin.value) {
-         continue
+        continue
       }
     }
 
@@ -209,10 +209,7 @@ const getLabel = (item: NavItem) => t(item.label)
       </ScrollArea>
     </SidebarContent>
 
-    <SidebarFooter class="mt-auto flex flex-col gap-3 px-2 pb-2">
-      <!--添加一块显示版本的地方  -->
-      <div class="text-sm border-t py-2 text-center">RUSTFS {{ $siteConfig?.release?.version || '' }}</div>
-    </SidebarFooter>
+    <SidebarFooter class="mt-auto flex flex-col gap-3 px-2 pb-2"> </SidebarFooter>
 
     <SidebarRail />
   </Sidebar>
