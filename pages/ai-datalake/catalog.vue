@@ -1143,6 +1143,7 @@ const listTabLabel = computed(() => {
     }
     case 'entity':
       if (q.value.type === 'relational') return 'Columns'
+      if (q.value.type === 'fileset') return 'Files'
       if (q.value.type === 'model') return 'Versions'
       return 'Details'
     case 'version':
@@ -1156,6 +1157,108 @@ const rightTabsDefault = computed(() => {
   // Keep list tab selected by default
   return 'list'
 })
+
+const rightTab = ref<'list' | 'details'>('list')
+
+const filesetFilesLoading = ref(false)
+const filesetFiles = ref<any[]>([])
+const filesetFilesPath = ref('/')
+const filesetFilesPathHistory = ref<string[]>(['/'])
+
+const resetFilesetFilesState = () => {
+  filesetFiles.value = []
+  filesetFilesPath.value = '/'
+  filesetFilesPathHistory.value = ['/']
+}
+
+const setFilesetPath = (path: string) => {
+  filesetFilesPath.value = path
+  if (!filesetFilesPathHistory.value.includes(path)) {
+    filesetFilesPathHistory.value = [...filesetFilesPathHistory.value, path]
+  }
+}
+
+const goFilesetBack = () => {
+  if (filesetFilesPathHistory.value.length <= 1) return
+  const nextHistory = filesetFilesPathHistory.value.slice(0, -1)
+  filesetFilesPathHistory.value = nextHistory
+  filesetFilesPath.value = nextHistory[nextHistory.length - 1]!
+}
+
+const openFilesetFolder = (file: any) => {
+  if (!file?.isDir) return
+  const base = filesetFilesPath.value === '/' ? '' : filesetFilesPath.value
+  setFilesetPath(`${base}/${file?.name || ''}`.replace(/\/+/g, '/'))
+}
+
+const formatFileSize = (size?: number) => {
+  const n = Number(size)
+  if (!Number.isFinite(n) || n <= 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(n) / Math.log(k))
+  return `${(n / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`
+}
+
+const formatFileTime = (value: unknown) => {
+  return formatTime(value) ?? '—'
+}
+
+const filesetBreadcrumbs = computed(() => {
+  const parts = filesetFilesPath.value.split('/').filter(Boolean)
+  const crumbs = ['/', ...parts.map((_, idx) => `/${parts.slice(0, idx + 1).join('/')}`)]
+  return crumbs
+})
+
+const loadFilesetFiles = async () => {
+  const metalake = q.value.metalake
+  const catalog = q.value.catalog
+  const schema = q.value.schema
+  const fileset = selectedEntityName.value
+  if (!metalake || !catalog || !schema || !fileset) return
+
+  try {
+    filesetFilesLoading.value = true
+    const res: any = await api.listFilesetFiles(
+      metalake,
+      catalog,
+      schema,
+      fileset,
+      filesetFilesPath.value || '/'
+    )
+    const files = res?.files ?? res?.fileInfos ?? res?.items ?? []
+    filesetFiles.value = Array.isArray(files) ? files : []
+  } catch (err: any) {
+    filesetFiles.value = []
+    message.error(err?.message || 'Failed to load files')
+  } finally {
+    filesetFilesLoading.value = false
+  }
+}
+
+watch(
+  () => [currentLevel.value, q.value.type, selectedEntityName.value],
+  () => {
+    if (currentLevel.value === 'entity' && q.value.type === 'fileset' && selectedEntityName.value) {
+      resetFilesetFilesState()
+      if (rightTab.value === 'list') {
+        loadFilesetFiles()
+      }
+      return
+    }
+    resetFilesetFilesState()
+  }
+)
+
+watch(
+  () => [filesetFilesPath.value, rightTab.value],
+  () => {
+    if (rightTab.value !== 'list') return
+    if (currentLevel.value === 'entity' && q.value.type === 'fileset' && selectedEntityName.value) {
+      loadFilesetFiles()
+    }
+  }
+)
 
 const currentEntityKind = computed<ResourceKind | null>(() => {
   switch (q.value.type) {
@@ -1741,6 +1844,7 @@ const submitCreateTable = async () => {
     message.success('Table created')
     createTableOpen.value = false
     await refreshSchemaContext(metalake, catalog, type, schema)
+    await loadEntitiesForSchema(metalake, catalog, type, schema)
     // Stay on schema page, don't navigate
   } catch (err: any) {
     message.error(err?.message || 'Failed to create table')
@@ -1955,49 +2059,271 @@ const openEdit = (kind: ResourceKind) => {
             ? versionDetail.value
             : entityDetail.value
 
-  if (!current) {
-    // For some actions (e.g. catalog edit from list), details may not be loaded yet.
-    // Try to load details based on current route context.
-    const metalake = q.value.metalake
-    const catalog = q.value.catalog
-    if (kind === 'catalog' && metalake && catalog) {
-      isLoading.value = true
-      api
-        .getCatalog(metalake, catalog)
-        .then(res => {
-          catalogDetail.value = res?.catalog ?? res ?? null
-          if (!catalogDetail.value) {
-            message.warning('No details loaded yet')
-            return
-          }
-          editTitle.value = `Edit ${kind}`
-          editJson.value = JSON.stringify(catalogDetail.value, null, 2)
-          editOpen.value = true
-        })
-        .catch(() => message.error('Failed to load catalog details'))
-        .finally(() => {
-          isLoading.value = false
-        })
-      return
-    }
+  const metalake = q.value.metalake
+  const catalog = q.value.catalog
+  const type = q.value.type
+  const schema = q.value.schema
+  const entity = selectedEntityName.value
 
-    message.warning('No details loaded yet')
-    return
-  }
-
-  // Catalog edit should use the structured dialog (Gravitino-like).
+  // For structured dialogs, always try to load fresh details from API
   if (kind === 'catalog') {
-    const metalake = q.value.metalake
-    const catalog = q.value.catalog
     if (metalake && catalog) {
       void openCatalogEdit(metalake, catalog)
       return
     }
   }
 
+  if (kind === 'schema') {
+    if (metalake && catalog && schema) {
+      void openSchemaEdit(metalake, catalog, schema)
+      return
+    }
+  }
+
+  if (kind === 'table') {
+    if (metalake && catalog && schema && entity) {
+      void openTableEdit(metalake, catalog, schema, entity)
+      return
+    }
+  }
+
+  if (kind === 'fileset') {
+    if (metalake && catalog && schema && entity) {
+      void openFilesetEdit(metalake, catalog, schema, entity)
+      return
+    }
+  }
+
+  if (!current) {
+    message.warning('No details loaded yet')
+    return
+  }
+
   editTitle.value = `Edit ${kind}`
   editJson.value = JSON.stringify(current, null, 2)
   editOpen.value = true
+}
+
+// --- Schema edit form (Gravitino-like) ---
+const editSchemaOpen = ref(false)
+const editSchemaOriginal = ref<any | null>(null)
+const editSchemaName = ref('')
+const editSchemaComment = ref('')
+const editSchemaProps = ref<Array<{ key: string; value: string }>>([{ key: '', value: '' }])
+
+const editSchemaPropsObject = computed(() => {
+  const obj: Record<string, string> = {}
+  for (const row of editSchemaProps.value) {
+    const k = row.key?.trim()
+    if (!k) continue
+    obj[k] = row.value ?? ''
+  }
+  return obj
+})
+
+async function openSchemaEdit(metalake: string, catalog: string, schema: string) {
+  try {
+    isLoading.value = true
+    const res = await api.getSchema(metalake, catalog, schema)
+    const s = res?.schema ?? res
+    if (!s) {
+      message.warning('No details loaded yet')
+      return
+    }
+    editSchemaOriginal.value = s
+    editSchemaName.value = s?.name ?? schema
+    editSchemaComment.value = s?.comment ?? ''
+    editSchemaProps.value = s?.properties ? Object.entries(s.properties).map(([key, value]) => ({ key, value: String(value) })) : [{ key: '', value: '' }]
+    editSchemaOpen.value = true
+  } catch {
+    message.error('Failed to load schema details')
+  } finally {
+    isLoading.value = false
+  }
+}
+
+async function submitEditSchema() {
+  const original = editSchemaOriginal.value
+  const metalake = q.value.metalake
+  const catalog = q.value.catalog
+  const type = q.value.type
+  if (!original || !metalake || !catalog || !type) return
+
+  const next = {
+    name: editSchemaName.value.trim(),
+    comment: editSchemaComment.value,
+    properties: editSchemaPropsObject.value,
+  }
+  if (!next.name) {
+    message.error('Name is required')
+    return
+  }
+
+  try {
+    isLoading.value = true
+    const updates = genUpdates(original, next)
+    await api.updateSchema(metalake, catalog, original?.name ?? next.name, { updates })
+    message.success('Schema updated')
+    editSchemaOpen.value = false
+    await refreshCatalogContext(metalake, catalog, type)
+  } catch (err: any) {
+    message.error(err?.message || 'Failed to update schema')
+  } finally {
+    isLoading.value = false
+  }
+}
+
+// --- Table edit form (Gravitino-like) ---
+const editTableOpen = ref(false)
+const editTableOriginal = ref<any | null>(null)
+const editTableName = ref('')
+const editTableComment = ref('')
+const editTableColumns = ref<Array<{ name: string; type: string; nullable: boolean; comment: string }>>([{ name: '', type: '', nullable: true, comment: '' }])
+const editTableProps = ref<Array<{ key: string; value: string }>>([{ key: '', value: '' }])
+
+const editTablePropsObject = computed(() => {
+  const obj: Record<string, string> = {}
+  for (const row of editTableProps.value) {
+    const k = row.key?.trim()
+    if (!k) continue
+    obj[k] = row.value ?? ''
+  }
+  return obj
+})
+
+async function openTableEdit(metalake: string, catalog: string, schema: string, table: string) {
+  try {
+    isLoading.value = true
+    const res = await api.getTable(metalake, catalog, schema, table)
+    const t = res?.table ?? res
+    if (!t) {
+      message.warning('No details loaded yet')
+      return
+    }
+    editTableOriginal.value = t
+    editTableName.value = t?.name ?? table
+    editTableComment.value = t?.comment ?? ''
+    editTableColumns.value = t?.columns?.length ? t.columns : [{ name: '', type: '', nullable: true, comment: '' }]
+    editTableProps.value = t?.properties ? Object.entries(t.properties).map(([key, value]) => ({ key, value: String(value) })) : [{ key: '', value: '' }]
+    editTableOpen.value = true
+  } catch {
+    message.error('Failed to load table details')
+  } finally {
+    isLoading.value = false
+  }
+}
+
+async function submitEditTable() {
+  const original = editTableOriginal.value
+  const metalake = q.value.metalake
+  const catalog = q.value.catalog
+  const type = q.value.type
+  const schema = q.value.schema
+  if (!original || !metalake || !catalog || !type || !schema) return
+
+  const next = {
+    name: editTableName.value.trim(),
+    comment: editTableComment.value,
+    properties: editTablePropsObject.value,
+  }
+  if (!next.name) {
+    message.error('Name is required')
+    return
+  }
+
+  try {
+    isLoading.value = true
+    const updates = genUpdates(original, next)
+    await api.updateTable(metalake, catalog, schema, original?.name ?? next.name, { updates })
+    message.success('Table updated')
+    editTableOpen.value = false
+    await refreshSchemaContext(metalake, catalog, type, schema)
+  } catch (err: any) {
+    message.error(err?.message || 'Failed to update table')
+  } finally {
+    isLoading.value = false
+  }
+}
+
+// --- Fileset edit form (Gravitino-like) ---
+const editFilesetOpen = ref(false)
+const editFilesetOriginal = ref<any | null>(null)
+const editFilesetName = ref('')
+const editFilesetType = ref('Managed')
+const editFilesetComment = ref('')
+const editFilesetLocations = ref<Array<{ name: string; location: string }>>([{ name: '', location: '' }])
+const editFilesetProps = ref<Array<{ key: string; value: string }>>([{ key: '', value: '' }])
+
+const editFilesetPropsObject = computed(() => {
+  const obj: Record<string, string> = {}
+  for (const row of editFilesetProps.value) {
+    const k = row.key?.trim()
+    if (!k) continue
+    obj[k] = row.value ?? ''
+  }
+  return obj
+})
+
+async function openFilesetEdit(metalake: string, catalog: string, schema: string, fileset: string) {
+  try {
+    isLoading.value = true
+    const res = await api.getFileset(metalake, catalog, schema, fileset)
+    const f = res?.fileset ?? res
+    if (!f) {
+      message.warning('No details loaded yet')
+      return
+    }
+    editFilesetOriginal.value = f
+    editFilesetName.value = f?.name ?? fileset
+    editFilesetType.value = f?.type ?? 'Managed'
+    editFilesetComment.value = f?.comment ?? ''
+    editFilesetLocations.value = f?.storageLocations ? Object.entries(f.storageLocations).map(([name, location]) => ({ name, location: String(location) })) : [{ name: '', location: '' }]
+    editFilesetProps.value = f?.properties ? Object.entries(f.properties).map(([key, value]) => ({ key, value: String(value) })) : [{ key: '', value: '' }]
+    editFilesetOpen.value = true
+  } catch {
+    message.error('Failed to load fileset details')
+  } finally {
+    isLoading.value = false
+  }
+}
+
+async function submitEditFileset() {
+  const original = editFilesetOriginal.value
+  const metalake = q.value.metalake
+  const catalog = q.value.catalog
+  const schema = q.value.schema
+  if (!original || !metalake || !catalog || !schema) return
+
+  const next = {
+    name: editFilesetName.value.trim(),
+    type: editFilesetType.value,
+    comment: editFilesetComment.value,
+    storageLocations: editFilesetLocations.value.reduce((acc, loc) => {
+      if (loc.name && loc.location) {
+        acc[loc.name] = loc.location
+      }
+      return acc
+    }, {} as Record<string, string>),
+    properties: editFilesetPropsObject.value,
+  }
+  if (!next.name) {
+    message.error('Name is required')
+    return
+  }
+
+  try {
+    isLoading.value = true
+    const updates = genUpdates(original, next)
+    await api.updateFileset(metalake, catalog, schema, original?.name ?? next.name, { updates })
+    message.success('Fileset updated')
+    editFilesetOpen.value = false
+    await refreshSchemaContext(metalake, catalog, q.value.type!, schema)
+    await loadEntitiesForSchema(metalake, catalog, q.value.type!, schema)
+  } catch (err: any) {
+    message.error(err?.message || 'Failed to update fileset')
+  } finally {
+    isLoading.value = false
+  }
 }
 
 // --- Catalog edit form (Gravitino-like) ---
@@ -2330,7 +2656,11 @@ const confirmDelete = async () => {
         deleteContext.value = null
         await refreshSchemaContext(metalake, catalog, type, schema)
         entities.value = entities.value.filter(e => getResourceName(e) !== entity)
-        goToSchema(metalake, catalog, type, schema)
+        await loadEntitiesForSchema(metalake, catalog, type, schema)
+        // Only navigate if currently viewing the deleted fileset
+        if (selectedEntityName.value === entity) {
+          goToSchema(metalake, catalog, type, schema)
+        }
         return
       case 'topic':
         if (!metalake || !catalog || !schema || !entity || !type) throw new Error('topic context is required')
@@ -2664,7 +2994,7 @@ const confirmDelete = async () => {
             </div>
           </div>
 
-          <Tabs :default-value="rightTabsDefault">
+          <Tabs v-model="rightTab" :default-value="rightTabsDefault">
             <TabsList class="w-full justify-start rounded-none bg-transparent p-0 border-b">
               <TabsTrigger
                 value="list"
@@ -2762,7 +3092,7 @@ const confirmDelete = async () => {
                         </TableCell>
                         <TableCell>
                           <div class="flex items-center gap-2">
-                            <Button variant="ghost" size="sm" @click="() => { goToSchema(q.metalake || '', q.catalog || '', q.type || '', s); openEdit('schema') }">
+                            <Button variant="ghost" size="sm" @click="() => openSchemaEdit(q.metalake || '', q.catalog || '', s)">
                               <Icon name="ri:edit-line" class="size-4" />
                             </Button>
                             <Button variant="ghost" size="sm" @click="() => { goToSchema(q.metalake || '', q.catalog || '', q.type || '', s); openDelete('schema') }">
@@ -2798,7 +3128,10 @@ const confirmDelete = async () => {
                         </TableCell>
                         <TableCell>
                           <div class="flex items-center gap-2">
-                            <Button variant="ghost" size="sm" @click="() => { goToEntity(q.metalake || '', q.catalog || '', q.type || '', q.schema || '', e); openEdit(currentEntityKind!) }">
+                            <Button variant="ghost" size="sm" @click="() => { 
+                              if (currentEntityKind === 'table') openTableEdit(q.metalake || '', q.catalog || '', q.schema || '', e)
+                              else if (currentEntityKind === 'fileset') openFilesetEdit(q.metalake || '', q.catalog || '', q.schema || '', e)
+                            }">
                               <Icon name="ri:edit-line" class="size-4" />
                             </Button>
                             <Button variant="ghost" size="sm" @click="() => { goToEntity(q.metalake || '', q.catalog || '', q.type || '', q.schema || '', e); openDelete(currentEntityKind!) }">
@@ -2835,6 +3168,64 @@ const confirmDelete = async () => {
                         <TableCell class="text-sm text-muted-foreground">{{ col.defaultValue ?? col.default ?? '—' }}</TableCell>
                         <TableCell class="text-sm text-muted-foreground">{{ col.comment ?? '—' }}</TableCell>
                       </TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
+
+                <!-- Entity level: for fileset show files -->
+                <div v-else-if="currentLevel === 'entity' && q.type === 'fileset'" class="space-y-3">
+                  <div class="flex items-center gap-1 flex-wrap">
+                    <template v-for="(crumb, idx) in filesetBreadcrumbs" :key="crumb">
+                      <button
+                        class="text-sm text-primary hover:underline cursor-pointer"
+                        @click="setFilesetPath(crumb)"
+                      >
+                        {{ idx === 0 ? 'Root' : crumb.split('/').pop() }}
+                      </button>
+                      <span v-if="idx < filesetBreadcrumbs.length - 1" class="text-sm text-muted-foreground">/</span>
+                    </template>
+                  </div>
+
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Size</TableHead>
+                        <TableHead>Last Modified</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow v-if="filesetFilesLoading">
+                        <TableCell colSpan="4" class="text-sm text-muted-foreground">Loading…</TableCell>
+                      </TableRow>
+                      <TableRow v-else-if="!filesetFiles.length">
+                        <TableCell colSpan="4" class="text-sm text-muted-foreground text-center">No files found in this directory</TableCell>
+                      </TableRow>
+                      <template v-else>
+                        <TableRow
+                          v-for="(file, idx) in filesetFiles"
+                          :key="`${file?.name || ''}-${idx}`"
+                          class="cursor-pointer"
+                          @click="openFilesetFolder(file)"
+                        >
+                          <TableCell>
+                            <div class="flex items-center gap-2">
+                              <Icon :name="file?.isDir ? 'ri:folder-2-line' : 'ri:file-2-line'" class="size-4 text-muted-foreground" />
+                              <span class="truncate">{{ file?.name || '—' }}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">{{ file?.isDir ? 'Directory' : 'File' }}</Badge>
+                          </TableCell>
+                          <TableCell class="text-sm text-muted-foreground">
+                            {{ file?.isDir ? '—' : formatFileSize(file?.size) }}
+                          </TableCell>
+                          <TableCell class="text-sm text-muted-foreground">
+                            {{ formatFileTime(file?.lastModified) }}
+                          </TableCell>
+                        </TableRow>
+                      </template>
                     </TableBody>
                   </Table>
                 </div>
@@ -2900,6 +3291,36 @@ const confirmDelete = async () => {
                   <div v-if="detailsTarget?.provider" class="col-span-1">
                     <div class="text-sm text-muted-foreground font-medium mb-2">Provider</div>
                     <div class="text-sm text-foreground">{{ detailsTarget.provider }}</div>
+                  </div>
+                </div>
+
+                <!-- Storage Location(s) for fileset -->
+                <div v-if="q.type === 'fileset' && detailsTarget?.storageLocation" class="col-span-1">
+                  <div class="text-sm text-muted-foreground font-medium mb-2">Storage location</div>
+                  <div class="text-sm text-foreground break-words">{{ detailsTarget?.storageLocation }}</div>
+                </div>
+
+                <div v-if="q.type === 'fileset' && detailsTarget?.storageLocations" class="col-span-1">
+                  <div class="text-sm text-muted-foreground font-medium mb-2">Storage Location(s)</div>
+                  <div class="border rounded-md overflow-hidden">
+                    <Table class="text-xs">
+                      <TableHeader class="bg-muted">
+                        <TableRow class="border-b">
+                          <TableHead class="py-2 px-3 text-left font-medium">Name</TableHead>
+                          <TableHead class="py-2 px-3 text-left font-medium">Location</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow
+                          v-for="([name, location], idx) in Object.entries(detailsTarget?.storageLocations || {})"
+                          :key="`${name}-${idx}`"
+                          class="border-b last:border-0 hover:bg-muted/50"
+                        >
+                          <TableCell class="py-2 px-3 font-mono text-xs truncate max-w-xs" :title="String(name)">{{ String(name) }}</TableCell>
+                          <TableCell class="py-2 px-3 font-mono text-xs truncate max-w-sm" :title="String(location)">{{ String(location) }}</TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
                   </div>
                 </div>
 
@@ -3351,6 +3772,243 @@ const confirmDelete = async () => {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+          <!-- Edit Schema (structured form, Gravitino-like) -->
+          <Dialog v-model:open="editSchemaOpen">
+            <DialogContent class="sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Edit Schema</DialogTitle>
+                <DialogDescription>Update schema metadata and properties.</DialogDescription>
+              </DialogHeader>
+
+              <div class="space-y-4">
+                <div class="space-y-2">
+                  <div class="text-sm font-medium">Name</div>
+                  <Input v-model="editSchemaName" placeholder="schema_name" disabled />
+                </div>
+
+                <div class="space-y-2">
+                  <div class="text-sm font-medium">Comment</div>
+                  <Textarea v-model="editSchemaComment" placeholder="Optional comment" />
+                </div>
+
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="text-sm font-medium">Properties</div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      class="inline-flex items-center gap-2"
+                      @click="() => (editSchemaProps = [...editSchemaProps, { key: '', value: '' }])"
+                    >
+                      <Icon name="ri:add-line" class="size-4" />
+                      <span>Add Property</span>
+                    </Button>
+                  </div>
+
+                  <div class="space-y-2">
+                    <div
+                      v-for="(row, idx) in editSchemaProps"
+                      :key="idx"
+                      class="grid grid-cols-[1fr_1fr_auto] gap-2"
+                    >
+                      <Input v-model="row.key" placeholder="Key" />
+                      <Input v-model="row.value" placeholder="Value" />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        class="justify-self-start"
+                        :disabled="editSchemaProps.length <= 1"
+                        @click="() => (editSchemaProps = editSchemaProps.filter((_, i) => i !== idx))"
+                      >
+                        <Icon name="ri:delete-bin-5-line" class="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" @click="editSchemaOpen = false">Cancel</Button>
+                <Button :disabled="isLoading" class="inline-flex items-center gap-2" @click="submitEditSchema">
+                  <Icon name="ri:save-3-line" class="size-4" />
+                  <span>Update</span>
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <!-- Edit Table (structured form, Gravitino-like) -->
+          <Dialog v-model:open="editTableOpen">
+            <DialogContent class="sm:max-w-4xl max-h-[80vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Edit Table</DialogTitle>
+                <DialogDescription>Update table metadata and properties.</DialogDescription>
+              </DialogHeader>
+
+              <div class="space-y-4">
+                <div class="space-y-2">
+                  <div class="text-sm font-medium">Name</div>
+                  <Input v-model="editTableName" placeholder="table_name" disabled />
+                </div>
+
+                <div class="space-y-2">
+                  <div class="text-sm font-medium">Comment</div>
+                  <Textarea v-model="editTableComment" placeholder="Optional comment" />
+                </div>
+
+                <div class="space-y-2">
+                  <div class="text-sm font-medium">Columns (Read-only)</div>
+                  <div class="border rounded-md">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Name</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Nullable</TableHead>
+                          <TableHead>Comment</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow v-for="(col, idx) in editTableColumns" :key="idx">
+                          <TableCell>{{ col.name }}</TableCell>
+                          <TableCell>{{ col.type }}</TableCell>
+                          <TableCell>{{ col.nullable ? 'Yes' : 'No' }}</TableCell>
+                          <TableCell>{{ col.comment }}</TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <p class="text-xs text-muted-foreground">
+                    Column structure cannot be modified through this dialog
+                  </p>
+                </div>
+
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="text-sm font-medium">Properties</div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      class="inline-flex items-center gap-2"
+                      @click="() => (editTableProps = [...editTableProps, { key: '', value: '' }])"
+                    >
+                      <Icon name="ri:add-line" class="size-4" />
+                      <span>Add Property</span>
+                    </Button>
+                  </div>
+
+                  <div class="space-y-2">
+                    <div
+                      v-for="(row, idx) in editTableProps"
+                      :key="idx"
+                      class="grid grid-cols-[1fr_1fr_auto] gap-2"
+                    >
+                      <Input v-model="row.key" placeholder="Key" />
+                      <Input v-model="row.value" placeholder="Value" />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        class="justify-self-start"
+                        :disabled="editTableProps.length <= 1"
+                        @click="() => (editTableProps = editTableProps.filter((_, i) => i !== idx))"
+                      >
+                        <Icon name="ri:delete-bin-5-line" class="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" @click="editTableOpen = false">Cancel</Button>
+                <Button :disabled="isLoading" class="inline-flex items-center gap-2" @click="submitEditTable">
+                  <Icon name="ri:save-3-line" class="size-4" />
+                  <span>Update</span>
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <!-- Edit Fileset (structured form, Gravitino-like) -->
+          <Dialog v-model:open="editFilesetOpen">
+            <DialogContent class="sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Edit Fileset</DialogTitle>
+                <DialogDescription>Update fileset metadata and properties.</DialogDescription>
+              </DialogHeader>
+
+              <div class="space-y-4">
+                <div class="space-y-2">
+                  <div class="text-sm font-medium">Name</div>
+                  <Input v-model="editFilesetName" placeholder="fileset_name" disabled />
+                </div>
+
+                <div class="space-y-2">
+                  <div class="text-sm font-medium">Type</div>
+                  <Input v-model="editFilesetType" placeholder="Type" disabled />
+                </div>
+
+                <div class="space-y-2">
+                  <div class="text-sm font-medium">Storage Locations</div>
+                  <div class="space-y-2">
+                    <div v-for="(loc, idx) in editFilesetLocations" :key="idx" class="grid grid-cols-[1fr_1fr] gap-2">
+                      <Input v-model="loc.name" placeholder="Name" />
+                      <Input v-model="loc.location" placeholder="Location" />
+                    </div>
+                  </div>
+                </div>
+
+                <div class="space-y-2">
+                  <div class="text-sm font-medium">Comment</div>
+                  <Textarea v-model="editFilesetComment" placeholder="Optional comment" />
+                </div>
+
+                <div class="space-y-2">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="text-sm font-medium">Properties</div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      class="inline-flex items-center gap-2"
+                      @click="() => (editFilesetProps = [...editFilesetProps, { key: '', value: '' }])"
+                    >
+                      <Icon name="ri:add-line" class="size-4" />
+                      <span>Add Property</span>
+                    </Button>
+                  </div>
+
+                  <div class="space-y-2">
+                    <div
+                      v-for="(row, idx) in editFilesetProps"
+                      :key="idx"
+                      class="grid grid-cols-[1fr_1fr_auto] gap-2"
+                    >
+                      <Input v-model="row.key" placeholder="Key" />
+                      <Input v-model="row.value" placeholder="Value" />
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        class="justify-self-start"
+                        :disabled="editFilesetProps.length <= 1"
+                        @click="() => (editFilesetProps = editFilesetProps.filter((_, i) => i !== idx))"
+                      >
+                        <Icon name="ri:delete-bin-5-line" class="size-4" />
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <DialogFooter>
+                <Button variant="outline" @click="editFilesetOpen = false">Cancel</Button>
+                <Button :disabled="isLoading" class="inline-flex items-center gap-2" @click="submitEditFileset">
+                  <Icon name="ri:save-3-line" class="size-4" />
+                  <span>Update</span>
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           <!-- Edit Catalog (structured form, Gravitino-like) -->
           <Dialog v-model:open="editCatalogOpen">

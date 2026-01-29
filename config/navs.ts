@@ -3,6 +3,11 @@ import type { NavItem } from '~/types/app-config'
 
 export default [
   {
+    label: '仪表盘',
+    icon: 'ri:dashboard-line',
+    to: '/dashboard',
+  },
+  {
     label: 'AI Data Lake',
     icon: 'ri:database-2-line',
     children: [
@@ -15,6 +20,11 @@ export default [
         label: 'File Metadata',
         to: '/ai-datalake/file-metadata',
         icon: 'ri:file-list-line',
+      },
+      {
+        label: '数据集',
+        to: '/ai-datalake/dataset',
+        icon: 'ri:apps-2-line',
       },
     ],
   },
@@ -110,6 +120,32 @@ export default [
     ],
   },
   {
+    label: '文件系统',
+    icon: 'ri:folder-line',
+    children: [
+      {
+        label: '目录管理',
+        to: '/filesystem/dirs',
+        icon: 'ri:folder-open-line',
+      },
+      {
+        label: 'QoS策略',
+        to: '/filesystem/qos',
+        icon: 'ri:slideshow-2-line',
+      },
+      {
+        label: '快照',
+        to: '/filesystem/snapshots',
+        icon: 'ri:snapchat-line',
+      },
+      {
+        label: '备份',
+        to: '/filesystem/backups',
+        icon: 'ri:archive-line',
+      },
+    ],
+  },
+  {
     label: 'Access Control',
     icon: 'ri:shield-check-line',
     isAdminOnly: true,
@@ -118,6 +154,27 @@ export default [
         label: 'Permission Policies',
         to: '/access-control/policies',
         icon: 'ri:file-shield-line',
+      },
+    ],
+  },
+  {
+    label: '监控',
+    icon: 'ri:line-chart-line',
+    children: [
+      {
+        label: '指标',
+        to: '/monitoring/metrics',
+        icon: 'ri:bar-chart-2-line',
+      },
+      {
+        label: '事件',
+        to: '/monitoring/events',
+        icon: 'ri:notification-3-line',
+      },
+      {
+        label: '告警',
+        to: '/monitoring/alerts',
+        icon: 'ri:alarm-warning-line',
       },
     ],
   },
