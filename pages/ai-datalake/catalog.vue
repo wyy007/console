@@ -511,7 +511,7 @@ const toggleMetalakeInUse = async (next: boolean) => {
     isLoading.value = true
     // Use Gravitino's dedicated PATCH endpoint
     await api.switchMetalakeInUse(metalake, next)
-    message.success('Updated in-use')
+    // message.success('Updated in-use')
     await refreshAll()
     if (!next) {
       goToMetalakeList()
@@ -543,7 +543,7 @@ const toggleMetalakeInUseFromList = async (metalake: string, next: boolean) => {
   try {
     isLoading.value = true
     await api.switchMetalakeInUse(metalake, next)
-    message.success('Updated in-use')
+    // message.success('Updated in-use')
     await refreshAll()
   } catch {
     // Revert optimistic update on failure
@@ -575,7 +575,7 @@ const toggleCatalogInUse = async (catalogName: string, next: boolean) => {
   try {
     isLoading.value = true
     await api.switchCatalogInUse(metalake, catalogName, next)
-    message.success('Updated in-use')
+    // message.success('Updated in-use')
 
     const { catalog, type } = q.value
     if (!next && catalog === catalogName && type) {
