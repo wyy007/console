@@ -273,6 +273,7 @@ if __name__ == "__main__":
     )
     
     args = parser.parse_args()
+
     uvicorn.run(
         app,
         host=args.host,
